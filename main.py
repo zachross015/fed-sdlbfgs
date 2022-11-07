@@ -5,6 +5,7 @@ from sdlbfgs import SdLBFGS
 from sdlbfgs_layer import SdLBFGSLayer
 from collections import OrderedDict
 import copy
+import argparse
 
 # Dataset utilities
 import torchvision
@@ -47,14 +48,32 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=test_batch_size, sh
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 
+# Command line arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('--model', required=True)
+parser.add_argument('--optimizer', required=True)
+args = parser.parse_args()
+
 # Definitions
-net = CNN(3, len(classes), 32)
+if args.model == 'CNN':
+    net = CNN(3, len(classes), 32)
+else:
+    net = resnet18(len(classes))
 net = net.to(device)
 
 criterion = nn.CrossEntropyLoss()
 
 optimizer_sgd = optim.SGD(net.parameters(), lr=local_lr)
-optimizer = SdLBFGS(net.parameters(), lr=server_lr)
+if args.optimizer == 'sdlbfgs':
+    optimizer = SdLBFGS(net.parameters(), lr=server_lr)
+elif args.optimizer == 'sdlbfgs_layer':
+    optimizer = SdLBFGSLayer(net.parameters(), lr=server_lr)
+elif args.optimizer == 'adam':
+    optimizer = optim.Adam(net.parameters())
+else:
+    optimizer = optim.SGD(net.parameters())
+
+filename = f'outputs_{net.__class__.__name__}_{optimizer.__class__.__name__}.csv'
 
 def train_test_epoch(epoch, optimizer, local=False):
 
@@ -110,10 +129,12 @@ def train_test_epoch(epoch, optimizer, local=False):
         tr_loss = running_loss_tr / num_batches_tr
         te_acc = num_correct_te / num_samples_te
         te_loss = running_loss_te / num_batches_te
-        print(f'{epoch},{tr_acc:.3f},{tr_loss:.3f},{te_acc:.3f},{te_loss:.3f}')  # {running_loss / num_batches:.3f} acc: {num_correct / num_samples:.3f}')
+        with open(filename, 'a+') as f:
+            f.write(f'{epoch},{tr_acc:.3f},{tr_loss:.3f},{te_acc:.3f},{te_loss:.3f}\n')
 
 
-print('epoch,tr_acc,tr_loss,te_acc,te_loss')
+with open(filename, 'a+') as f:
+    f.write('epoch,tr_acc,tr_loss,te_acc,te_loss\n')
 for roun in range(rounds):
     net.train()
     for epoch in range(local_epochs):
