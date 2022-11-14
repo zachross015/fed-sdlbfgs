@@ -3,6 +3,7 @@ from resnet import resnet18
 from cnn import CNN
 from sdlbfgs import SdLBFGS
 from sdlbfgs_layer import SdLBFGSLayer
+import time
 from collections import OrderedDict
 import copy
 import argparse
@@ -22,7 +23,7 @@ train_batch_size = 64
 test_batch_size = 64
 num_workers = 2
 local_epochs = 1
-rounds = 100
+rounds = 1000
 local_lr = 0.001
 server_lr = 1.0
 device='cuda' if torch.cuda.is_available() else "cpu"
@@ -71,9 +72,9 @@ elif args.optimizer == 'sdlbfgs_layer':
 elif args.optimizer == 'adam':
     optimizer = optim.Adam(net.parameters())
 else:
-    optimizer = optim.SGD(net.parameters())
+    optimizer = optim.SGD(net.parameters(), lr=0.05)
 
-filename = f'outputs_{net.__class__.__name__}_{optimizer.__class__.__name__}.csv'
+filename = f'outputs_{net.__class__.__name__}_{optimizer.__class__.__name__}_{rounds}.csv'
 
 def train_test_epoch(epoch, optimizer, local=False):
 
@@ -81,6 +82,8 @@ def train_test_epoch(epoch, optimizer, local=False):
     num_batches_tr = 0
     num_correct_tr = 0.0
     num_samples_tr = 0.0
+
+    start = time.time()
 
     for i, data in enumerate(trainloader, 0):
         # get the inputs; data is a list of [inputs, labels]
@@ -123,6 +126,9 @@ def train_test_epoch(epoch, optimizer, local=False):
             num_correct_te += (predictions == y).sum()
             num_samples_te += predictions.size(0)
             num_batches_te += 1
+
+    end = time.time()
+    elapsed = end - start
         
     if not local:
         tr_acc = num_correct_tr / num_samples_tr
@@ -130,15 +136,14 @@ def train_test_epoch(epoch, optimizer, local=False):
         te_acc = num_correct_te / num_samples_te
         te_loss = running_loss_te / num_batches_te
         with open(filename, 'a+') as f:
-            f.write(f'{epoch},{tr_acc:.3f},{tr_loss:.3f},{te_acc:.3f},{te_loss:.3f}\n')
+            f.write(f'{epoch},{tr_acc:.3f},{tr_loss:.3f},{te_acc:.3f},{te_loss:.3f},{elapsed}\n')
 
 
 with open(filename, 'a+') as f:
-    f.write('epoch,tr_acc,tr_loss,te_acc,te_loss\n')
+    f.write('epoch,tr_acc,tr_loss,te_acc,te_loss,elapsed\n')
 for roun in range(rounds):
     net.train()
     for epoch in range(local_epochs):
         local_grad = train_test_epoch(epoch, optimizer_sgd, local=True)
     train_test_epoch(roun, optimizer)
 
-print('Finished Training')
