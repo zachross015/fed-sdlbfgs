@@ -3,16 +3,15 @@ from resnet import resnet18
 from cnn import CNN
 from sdlbfgs import SdLBFGS
 from sdlbfgs_layer import SdLBFGSLayer
-<<<<<<< HEAD
 from kfac import KFACOptimizer
 from shampoo import Shampoo
 
-=======
 import time
 from collections import OrderedDict
 import copy
->>>>>>> af177fba4b46bc531716bedcc27ebf0858d62438
 import argparse
+import random
+import numpy as np
 
 # Dataset utilities
 import torchvision
@@ -24,18 +23,34 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-# Config
+#######################
+# mark: CONFIGURATION #
+#######################
+
+
 train_batch_size = 64
 test_batch_size = 64
 num_workers = 2
+
 local_epochs = 1
-rounds = 1000
 local_lr = 0.001
+num_clients = 1
+
+rounds = 500
 server_lr = 1.0
-device='cuda' if torch.cuda.is_available() else "cpu"
+
+device = 'cuda' if torch.cuda.is_available() else "cpu"
+
+torch.manual_seed(0)
+random.seed(0)
+np.random.seed(0)
 
 
-# Dataset loading
+#########################
+# mark: DATASET LOADING #
+#########################
+
+
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
 trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transforms.Compose([
@@ -55,56 +70,90 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=test_batch_size, sh
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 
-# Command line arguments
+##############################
+# mark: COMMAND LINE PARSING #
+##############################
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', required=True)
 parser.add_argument('--optimizer', required=True)
 args = parser.parse_args()
 
-# Definitions
+
+##########################
+# mark: MODEL DEFINITION #
+##########################
+
+
 if args.model == 'CNN':
-    net = CNN(3, len(classes), 32)
+    server_model = CNN(3, len(classes), 32)
 else:
-    net = resnet18(len(classes))
-net = net.to(device)
+    server_model = resnet18(len(classes))
+server_model = server_model.to(device)
+
+client_models = []
+for _ in range(num_clients):
+    if args.model == 'CNN':
+        client_model = CNN(3, len(classes), 32)
+    else:
+        client_model = resnet18(len(classes))
+    client_model.to(device)
+    client_models.append(client_model)
+
+client_optims = []
+for i in range(num_clients):
+    client_optims.append(optim.SGD(client_models[i].parameters(), lr=local_lr))
+
+
+#########################
+# mark: LOSS DEFINITION #
+#########################
+
 
 criterion = nn.CrossEntropyLoss()
 
-optimizer_sgd = optim.SGD(net.parameters(), lr=local_lr)
+
+##############################
+# mark: OPTIMIZER DEFINITION #
+##############################
+
+
 if args.optimizer == 'sdlbfgs':
-    optimizer = SdLBFGS(net.parameters(), lr=server_lr)
+    optimizer = SdLBFGS(server_model.parameters(), lr=server_lr)
 elif args.optimizer == 'sdlbfgs_layer':
-    optimizer = SdLBFGSLayer(net.parameters(), lr=server_lr)
+    optimizer = SdLBFGSLayer(server_model.parameters(), lr=server_lr)
 elif args.optimizer == 'adam':
-    optimizer = optim.Adam(net.parameters())
+    optimizer = optim.Adam(server_model.parameters())
 elif args.optimizer == 'kfac':
-    optimizer = KFACOptimizer(net.parameters())
+    optimizer = KFACOptimizer(server_model, lr=0.001)
+    optimizer.acc_stats = True
 elif args.optimizer == 'shampoo':
-    optimizer = Shampoo(net.parameters())
+    optimizer = Shampoo(server_model.parameters())
 else:
-    optimizer = optim.SGD(net.parameters(), lr=0.05)
+    optimizer = optim.SGD(server_model.parameters(), lr=0.05)
 
-filename = f'outputs_{net.__class__.__name__}_{optimizer.__class__.__name__}_{rounds}.csv'
 
-def train_test_epoch(epoch, optimizer, local=False):
+filename = f'tmp_outputs_{server_model.__class__.__name__}_{optimizer.__class__.__name__}_{rounds}.csv'
+
+
+def train_test_epoch_local(model, optimizer):
 
     running_loss_tr = 0.0
     num_batches_tr = 0
     num_correct_tr = 0.0
     num_samples_tr = 0.0
 
-    start = time.time()
-
     for i, data in enumerate(trainloader, 0):
         # get the inputs; data is a list of [inputs, labels]
         inputs, labels = data
         inputs, labels = inputs.to(device), labels.to(device)
-        
+
         # zero the parameter gradients
         optimizer.zero_grad()
 
         # forward + backward + optimize
-        outputs = net(inputs)
+        outputs = server_model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
 
@@ -119,8 +168,7 @@ def train_test_epoch(epoch, optimizer, local=False):
             num_correct_tr += (predictions == labels).sum()
             num_samples_tr += predictions.size(0)
 
-
-    net.eval()
+    server_model.eval()
     running_loss_te = 0.0
     num_correct_te = 0.0
     num_samples_te = 0.0
@@ -130,7 +178,55 @@ def train_test_epoch(epoch, optimizer, local=False):
         for x, y in testloader:
             x = x.to(device)
             y = y.to(device)
-            scores = net(x)
+            scores = server_model(x)
+            running_loss_te += criterion(scores, y)
+            _, predictions = scores.max(1)
+            num_correct_te += (predictions == y).sum()
+            num_samples_te += predictions.size(0)
+            num_batches_te += 1
+
+
+def train_test_epoch_global(epoch, optimizer):
+
+    start = time.time()
+    params = optimizer.param_groups[0]['params']
+
+    for p in params:
+        p.grad = torch.zeros_like(p)
+    optimizer.zero_grad()
+
+    # Calculate pseudogradient
+    server_model.train()
+    for i in range(num_clients):
+        model = client_models[i]
+        optim = client_optims[i]
+        model.load_state_dict(copy.deepcopy(server_model.state_dict()))
+        for epoch in range(local_epochs):
+            train_test_epoch_local(model, optim)
+
+        for i, names in enumerate(server_model.named_parameters()):
+            (key, _) = names
+            optimizer.param_groups[0]['params'][i].grad += server_model.state_dict()[key] - model.state_dict()[key]
+
+    for p in params:
+        p.grad /= num_clients
+
+
+    # Step using pseudogradient and optimizer
+    optimizer.step()
+
+    server_model.eval()
+    running_loss_te = 0.0
+    num_correct_te = 0.0
+    num_samples_te = 0.0
+    num_batches_te = 0
+
+    # Calculate testing loss and accuracy
+    with torch.no_grad():
+        for x, y in testloader:
+            x = x.to(device)
+            y = y.to(device)
+            scores = server_model(x)
             running_loss_te += criterion(scores, y)
             _, predictions = scores.max(1)
             num_correct_te += (predictions == y).sum()
@@ -139,21 +235,17 @@ def train_test_epoch(epoch, optimizer, local=False):
 
     end = time.time()
     elapsed = end - start
-        
-    if not local:
-        tr_acc = num_correct_tr / num_samples_tr
-        tr_loss = running_loss_tr / num_batches_tr
-        te_acc = num_correct_te / num_samples_te
-        te_loss = running_loss_te / num_batches_te
-        with open(filename, 'a+') as f:
-            f.write(f'{epoch},{tr_acc:.3f},{tr_loss:.3f},{te_acc:.3f},{te_loss:.3f},{elapsed}\n')
+
+    # Print results
+    te_acc = num_correct_te / num_samples_te
+    te_loss = running_loss_te / num_batches_te
+    # with open(filename, 'a+') as f:
+    print(f'{epoch},{te_acc:.3f},{te_loss:.3f},{elapsed}\n')
 
 
-with open(filename, 'a+') as f:
-    f.write('epoch,tr_acc,tr_loss,te_acc,te_loss,elapsed\n')
+# with open(filename, 'a+') as f:
+print('epoch,te_acc,te_loss,elapsed\n')
+
+
 for roun in range(rounds):
-    net.train()
-    for epoch in range(local_epochs):
-        local_grad = train_test_epoch(epoch, optimizer_sgd, local=True)
-    train_test_epoch(roun, optimizer)
-
+    train_test_epoch_global(roun, optimizer)

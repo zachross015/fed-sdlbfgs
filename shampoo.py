@@ -1,8 +1,16 @@
-import torch
+from torch import Tensor
 from torch.optim.optimizer import Optimizer
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union
+import torch
 
-from .types import OptFloat, OptLossClosure, Params
+Params = Union[Iterable[Tensor], Iterable[Dict[str, Any]]]
 
+LossClosure = Callable[[], float]
+OptLossClosure = Optional[LossClosure]
+Betas2 = Tuple[float, float]
+State = Dict[str, Any]
+OptFloat = Optional[float]
+Nus2 = Tuple[float, float]
 
 def _matrix_power(matrix: torch.Tensor, power: float) -> torch.Tensor:
     # use CPU for svd for speed up
