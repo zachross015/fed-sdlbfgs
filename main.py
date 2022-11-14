@@ -3,8 +3,9 @@ from resnet import resnet18
 from cnn import CNN
 from sdlbfgs import SdLBFGS
 from sdlbfgs_layer import SdLBFGSLayer
-from collections import OrderedDict
-import copy
+from kfac import KFACOptimizer
+from shampoo import Shampoo
+
 import argparse
 
 # Dataset utilities
@@ -22,7 +23,7 @@ train_batch_size = 64
 test_batch_size = 64
 num_workers = 2
 local_epochs = 1
-rounds = 100
+rounds = 5
 local_lr = 0.001
 server_lr = 1.0
 device='cuda' if torch.cuda.is_available() else "cpu"
@@ -70,8 +71,12 @@ elif args.optimizer == 'sdlbfgs_layer':
     optimizer = SdLBFGSLayer(net.parameters(), lr=server_lr)
 elif args.optimizer == 'adam':
     optimizer = optim.Adam(net.parameters())
+elif args.optimizer == 'kfac':
+    optimizer = KFACOptimizer(net.parameters())
+elif args.optimizer == 'shampoo':
+    optimizer = Shampoo(net.parameters())
 else:
-    optimizer = optim.SGD(net.parameters())
+    optimizer = optim.SGD(net.parameters(), lr=0.05)
 
 filename = f'outputs_{net.__class__.__name__}_{optimizer.__class__.__name__}.csv'
 
