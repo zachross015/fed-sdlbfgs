@@ -1,27 +1,26 @@
-from models import *
-from optims import *
-
+from models import CNN, resnet18
+from optims import SdLBFGS, SdLBFGSLayer, KFACOptimizer, Shampoo
+import torch.optim as optim
 
 
 def get_model(model_name):
     if model_name == 'CNN':
-        model = CNN(3, len(classes), 32)
+        model = CNN(3, 10, 32)
     else:
-        model = resnet18(len(classes))
-    model = model.to(device)
+        model = resnet18(10)
     return model
 
 
-def get_optim(optim_name):
+def get_optim(optim_name, model, **kwargs):
     if optim_name == 'sdlbfgs':
-        return SdLBFGS
+        return SdLBFGS(model.parameters(), **kwargs)
     elif optim_name == 'sdlbfgs_layer':
-        return SdLBFGSLayer
+        return SdLBFGSLayer(model.parameters(), **kwargs)
     elif optim_name == 'adam':
-        return optim.Adam
+        return optim.Adam(model.parameters(), **kwargs)
     elif optim_name == 'kfac':
-        return KFACOptimizer
+        return KFACOptimizer(model, **kwargs)
     elif optim_name == 'shampoo':
-        return Shampoo
+        return Shampoo(model.parameters(), **kwargs)
     else:
-        return optim.SGD
+        return optim.SGD(model.parameters(), **kwargs)
