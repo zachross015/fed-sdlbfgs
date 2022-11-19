@@ -1,13 +1,8 @@
 # My stuff
-from resnet import resnet18
-from cnn import CNN
-from sdlbfgs import SdLBFGS
-from sdlbfgs_layer import SdLBFGSLayer
-from kfac import KFACOptimizer
-from shampoo import Shampoo
+from models import CNN, resnet18
+from optims import SdLBFGS, SdLBFGSLayer, KFACOptimizer, Shampoo
 
 import time
-from collections import OrderedDict
 import copy
 import argparse
 import random
@@ -59,7 +54,6 @@ trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True
             transforms.RandomCrop(32, 4),
             normalize
             ]))
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=train_batch_size, shuffle=True, num_workers=num_workers)
 
 testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transforms.Compose([
         transforms.ToTensor(),
@@ -86,24 +80,105 @@ args = parser.parse_args()
 ##########################
 
 
-if args.model == 'CNN':
-    server_model = CNN(3, len(classes), 32)
-else:
-    server_model = resnet18(len(classes))
-server_model = server_model.to(device)
-
-client_models = []
-for _ in range(num_clients):
-    if args.model == 'CNN':
-        client_model = CNN(3, len(classes), 32)
+def get_model(model_name):
+    if model_name == 'CNN':
+        model = CNN(3, len(classes), 32)
     else:
-        client_model = resnet18(len(classes))
-    client_model.to(device)
-    client_models.append(client_model)
+        model = resnet18(len(classes))
+    model = model.to(device)
+    return model
 
-client_optims = []
+
+def get_optim(optim_name):
+    if optim_name == 'sdlbfgs':
+        return SdLBFGS
+    elif optim_name == 'sdlbfgs_layer':
+        return SdLBFGSLayer
+    elif optim_name == 'adam':
+        return optim.Adam
+    elif optim_name == 'kfac':
+        return KFACOptimizer
+    elif optim_name == 'shampoo':
+        return Shampoo
+    else:
+        return optim.SGD
+
+
+###########################
+# mark: CLIENT DEFINITION #
+###########################
+
+
+class Client:
+
+    def __init__(self, model_name, optim_name, trainset, testset):
+
+        # Init Model
+        self.model = get_model(model_name)
+        self.optim = get_optim(optim_name)(self.model.parameters(), lr=local_lr)
+
+        self.trainloader = torch.utils.data.DataLoader(trainset, batch_size=train_batch_size, shuffle=True, num_workers=num_workers)
+        self.testloader = torch.utils.data.DataLoader(testset, batch_size=test_batch_size, shuffle=False, num_workers=num_workers)
+
+
+    def train_epoch(self):
+        running_loss_tr = 0.0
+        num_batches_tr = 0
+        num_correct_tr = 0.0
+        num_samples_tr = 0.0
+
+        for i, data in enumerate(self.trainloader, 0):
+            # get the inputs; data is a list of [inputs, labels]
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            # zero the parameter gradients
+            self.optim.zero_grad()
+
+            # forward + backward + optimize
+            outputs = self.model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+
+            self.optim.step()
+
+            # Calculate statisics
+            running_loss_tr += loss.item()
+            num_batches_tr += 1
+
+            with torch.no_grad():
+                _, predictions = outputs.max(1)
+                num_correct_tr += (predictions == labels).sum()
+                num_samples_tr += predictions.size(0)
+
+        return (running_loss_tr / num_batches_tr, num_correct_tr / num_samples_tr)
+
+    def test_epoch(self):
+        running_loss_te = 0.0
+        num_correct_te = 0.0
+        num_samples_te = 0.0
+        num_batches_te = 0
+
+        with torch.no_grad():
+            for x, y in testloader:
+                x = x.to(device)
+                y = y.to(device)
+                scores = self.model(x)
+                running_loss_te += criterion(scores, y)
+                _, predictions = scores.max(1)
+                num_correct_te += (predictions == y).sum()
+                num_samples_te += predictions.size(0)
+                num_batches_te += 1
+
+        return (running_loss_te / num_batches_te, num_correct_te / num_samples_te)
+
+
+clients = []
+client_datasets = torch.utils.data.random_split(trainset, [1.0 / num_clients for _ in range(num_clients)], generator=torch.Generator().manual_seed(0))
+client_testsets = torch.utils.data.random_split(testset, [1.0 / num_clients for _ in range(num_clients)], generator=torch.Generator().manual_seed(0))
+
 for i in range(num_clients):
-    client_optims.append(optim.SGD(client_models[i].parameters(), lr=local_lr))
+    clients.append(Client(args.model, 'SGD', client_datasets[i], client_testsets[i]))
 
 
 #########################
@@ -119,133 +194,92 @@ criterion = nn.CrossEntropyLoss()
 ##############################
 
 
-if args.optimizer == 'sdlbfgs':
-    optimizer = SdLBFGS(server_model.parameters(), lr=server_lr)
-elif args.optimizer == 'sdlbfgs_layer':
-    optimizer = SdLBFGSLayer(server_model.parameters(), lr=server_lr)
-elif args.optimizer == 'adam':
-    optimizer = optim.Adam(server_model.parameters())
-elif args.optimizer == 'kfac':
-    optimizer = KFACOptimizer(server_model, lr=0.001)
-    optimizer.acc_stats = True
-elif args.optimizer == 'shampoo':
-    optimizer = Shampoo(server_model.parameters())
-else:
-    optimizer = optim.SGD(server_model.parameters(), lr=0.05)
+# filename = f'tmp_outputs_{server_model.__class__.__name__}_{optimizer.__class__.__name__}_{rounds}.csv'
 
 
-filename = f'tmp_outputs_{server_model.__class__.__name__}_{optimizer.__class__.__name__}_{rounds}.csv'
+class Server:
 
+    def __init__(self, model_name, optim_name, clients, testset):
 
-def train_test_epoch_local(model, optimizer):
+        # Init Model
+        self.model = get_model(model_name)
+        self.optim = get_optim(optim_name)(self.model.parameters(), lr=server_lr)
 
-    running_loss_tr = 0.0
-    num_batches_tr = 0
-    num_correct_tr = 0.0
-    num_samples_tr = 0.0
+        self.testloader = torch.utils.data.DataLoader(
+                testset, 
+                batch_size=test_batch_size, 
+                shuffle=False, 
+                num_workers=num_workers)
 
-    for i, data in enumerate(trainloader, 0):
-        # get the inputs; data is a list of [inputs, labels]
-        inputs, labels = data
-        inputs, labels = inputs.to(device), labels.to(device)
+        self.clients = clients
+        self.num_clients = len(clients)
 
-        # zero the parameter gradients
-        optimizer.zero_grad()
+    def train_epoch(self):
 
-        # forward + backward + optimize
-        outputs = server_model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
+        start = time.time()
+        params = self.optim.param_groups[0]['params']
 
-        optimizer.step()
+        for p in params:
+            p.grad = torch.zeros_like(p)
+        self.optim.zero_grad()
 
-        # print statistics
-        running_loss_tr += loss.item()
-        num_batches_tr += 1
+        # Calculate pseudogradient
+        self.model.train()
+        for i in range(self.num_clients):
 
+            client = self.clients[i]
+            client.model.load_state_dict(copy.deepcopy(self.model.state_dict()))
+
+            for epoch in range(local_epochs):
+                client.train_epoch()
+
+            for i, names in enumerate(self.model.named_parameters()):
+                (key, _) = names
+                self.optim.param_groups[0]['params'][i].grad += self.model.state_dict()[key] - client.model.state_dict()[key]
+
+        for p in params:
+            p.grad /= self.num_clients
+
+        # Step using pseudogradient and optimizer
+        self.optim.step()
+
+        end = time.time()
+        self.elapsed = end - start
+
+    def test_epoch(self):
+
+        self.model.eval()
+        running_loss_te = 0.0
+        num_correct_te = 0.0
+        num_samples_te = 0.0
+        num_batches_te = 0
+
+        # Calculate testing loss and accuracy
         with torch.no_grad():
-            _, predictions = outputs.max(1)
-            num_correct_tr += (predictions == labels).sum()
-            num_samples_tr += predictions.size(0)
+            for x, y in testloader:
+                x = x.to(device)
+                y = y.to(device)
+                scores = self.model(x)
+                running_loss_te += criterion(scores, y)
+                _, predictions = scores.max(1)
+                num_correct_te += (predictions == y).sum()
+                num_samples_te += predictions.size(0)
+                num_batches_te += 1
 
-    server_model.eval()
-    running_loss_te = 0.0
-    num_correct_te = 0.0
-    num_samples_te = 0.0
-    num_batches_te = 0
+        # Print results
+        te_acc = num_correct_te / num_samples_te
+        te_loss = running_loss_te / num_batches_te
 
-    with torch.no_grad():
-        for x, y in testloader:
-            x = x.to(device)
-            y = y.to(device)
-            scores = server_model(x)
-            running_loss_te += criterion(scores, y)
-            _, predictions = scores.max(1)
-            num_correct_te += (predictions == y).sum()
-            num_samples_te += predictions.size(0)
-            num_batches_te += 1
+        return (te_loss, te_acc, self.elapsed)
 
-
-def train_test_epoch_global(epoch, optimizer):
-
-    start = time.time()
-    params = optimizer.param_groups[0]['params']
-
-    for p in params:
-        p.grad = torch.zeros_like(p)
-    optimizer.zero_grad()
-
-    # Calculate pseudogradient
-    server_model.train()
-    for i in range(num_clients):
-        model = client_models[i]
-        optim = client_optims[i]
-        model.load_state_dict(copy.deepcopy(server_model.state_dict()))
-        for epoch in range(local_epochs):
-            train_test_epoch_local(model, optim)
-
-        for i, names in enumerate(server_model.named_parameters()):
-            (key, _) = names
-            optimizer.param_groups[0]['params'][i].grad += server_model.state_dict()[key] - model.state_dict()[key]
-
-    for p in params:
-        p.grad /= num_clients
-
-
-    # Step using pseudogradient and optimizer
-    optimizer.step()
-
-    server_model.eval()
-    running_loss_te = 0.0
-    num_correct_te = 0.0
-    num_samples_te = 0.0
-    num_batches_te = 0
-
-    # Calculate testing loss and accuracy
-    with torch.no_grad():
-        for x, y in testloader:
-            x = x.to(device)
-            y = y.to(device)
-            scores = server_model(x)
-            running_loss_te += criterion(scores, y)
-            _, predictions = scores.max(1)
-            num_correct_te += (predictions == y).sum()
-            num_samples_te += predictions.size(0)
-            num_batches_te += 1
-
-    end = time.time()
-    elapsed = end - start
-
-    # Print results
-    te_acc = num_correct_te / num_samples_te
-    te_loss = running_loss_te / num_batches_te
-    # with open(filename, 'a+') as f:
-    print(f'{epoch},{te_acc:.3f},{te_loss:.3f},{elapsed}\n')
+server = Server(args.model, args.optimizer, clients, testset)
 
 
 # with open(filename, 'a+') as f:
 print('epoch,te_acc,te_loss,elapsed\n')
 
-
 for roun in range(rounds):
-    train_test_epoch_global(roun, optimizer)
+    server.train_epoch()
+    loss, acc, elapsed = server.test_epoch()
+    print(f'{roun},{acc},{loss},{elapsed}')
+

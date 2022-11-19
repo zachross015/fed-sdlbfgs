@@ -195,7 +195,8 @@ class KFACOptimizer(optim.Optimizer):
                  weight_decay=0,
                  TCov=10,
                  TInv=100,
-                 batch_averaged=True):
+                 batch_averaged=True,
+                 acc_stats=True):
         if lr < 0.0:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if momentum < 0.0:
@@ -228,6 +229,8 @@ class KFACOptimizer(optim.Optimizer):
         self.kl_clip = kl_clip
         self.TCov = TCov
         self.TInv = TInv
+
+        self.acc_stats = acc_stats
 
     def _save_input(self, module, input):
         if torch.is_grad_enabled() and self.steps % self.TCov == 0:
