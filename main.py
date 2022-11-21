@@ -31,13 +31,13 @@ parser.add_argument('--num_workers', default=2)
 
 # Local Config
 parser.add_argument('--local_epochs', default=1)
-parser.add_argument('--local_lr', default=0.001)
+parser.add_argument('--local_lr', default=0.00001)
 parser.add_argument('--num_clients', default=1)
 
 # Server config
 parser.add_argument('--optimizer', required=True)
 parser.add_argument('--rounds', default=500)
-parser.add_argument('--server_lr', default=1.0)
+parser.add_argument('--server_lr', default=0.01)
 parser.add_argument('--seed', default=0)
 
 args = parser.parse_args()
@@ -61,9 +61,10 @@ server_lr = args.server_lr
 
 device = 'cuda' if torch.cuda.is_available() else "cpu"
 
-torch.manual_seed(args.seed)
-random.seed(args.seed)
-np.random.seed(args.seed)
+seed = args.seed
+torch.manual_seed(seed)
+random.seed(seed)
+np.random.seed(seed)
 
 criterion = nn.CrossEntropyLoss()
 
@@ -93,10 +94,16 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=test_batch_size, sh
 # mark: CLIENT DEFINITION #
 ###########################
 
+n = len(trainset)
+div = num_clients
+trainsplit = [n // div + (1 if x < n % div else 0) for x in range(div)]
+
+n = len(testset)
+testsplit = [n // div + (1 if x < n % div else 0) for x in range(div)]
 
 clients = []
-client_datasets = torch.utils.data.random_split(trainset, [1.0 / num_clients for _ in range(num_clients)], generator=torch.Generator().manual_seed(0))
-client_testsets = torch.utils.data.random_split(testset, [1.0 / num_clients for _ in range(num_clients)], generator=torch.Generator().manual_seed(0))
+client_datasets = torch.utils.data.random_split(trainset, trainsplit, generator=torch.Generator().manual_seed(seed))
+client_testsets = torch.utils.data.random_split(testset, testsplit, generator=torch.Generator().manual_seed(seed))
 
 for i in range(num_clients):
 
