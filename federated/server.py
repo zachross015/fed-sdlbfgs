@@ -122,6 +122,6 @@ class ResNetServer(Server):
             buffers[name] = torch.stack(buffers[name])
 
             if 'num_batches_tracked' in name:
-                self.model.state_dict()[name] = buffers[name].sum(dim=0)
+                self.model.state_dict()[name] = buffers[name].mean(dim=0, dtype=torch.float).type(torch.long)
             else:
                 self.model.state_dict()[name] = buffers[name].mean(dim=0)

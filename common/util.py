@@ -23,4 +23,4 @@ def get_optim(optim_name, model, **kwargs):
     elif optim_name == 'shampoo':
         return Shampoo(model.parameters())
     else:
-        return optim.SGD(model.parameters(), lr=0.005)
+        return optim.SGD(model.parameters(), **kwargs)

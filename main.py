@@ -28,6 +28,7 @@ parser.add_argument('--model', required=True)
 parser.add_argument('--train_batch_size', default=64, type=int)
 parser.add_argument('--test_batch_size', default=64, type=int)
 parser.add_argument('--num_workers', default=2, type=int)
+parser.add_argument('--verbose', action='store_true')
 
 # Local Config
 parser.add_argument('--local_epochs', default=1, type=int)
@@ -41,6 +42,8 @@ parser.add_argument('--server_lr', default=1.0, type=float)
 parser.add_argument('--seed', default=0, type=int)
 
 args = parser.parse_args()
+if 'verbose' not in args:
+    args.verbose = False
 
 
 #######################
@@ -67,6 +70,13 @@ random.seed(seed)
 np.random.seed(seed)
 
 criterion = nn.CrossEntropyLoss()
+
+config = [
+        ('train_batch_size', train_batch_size),
+        ('test_batch_size', test_batch_size),
+        ('local_lr', local_lr),
+        ('server_lr', server_lr)
+        ]
 
 
 #########################
@@ -112,7 +122,8 @@ for i in range(num_clients):
     model = model.to(device)
     model.device = device
 
-    optim = get_optim('SGD', model, lr=local_lr)
+    optim = get_optim('Adam', model, lr=local_lr)
+    config.append(('client optim', optim.__class__.__name__))
 
     trainloader = torch.utils.data.DataLoader(
             client_datasets[i],
@@ -138,7 +149,12 @@ model = get_model(args.model)
 model = model.to(device)
 model.device = device
 
+config.append(('model', model.__class__.__name__))
+
 optim = get_optim(args.optimizer, model, lr=server_lr)
+
+config.append(('server optim', optim.__class__.__name__))
+
 if args.model == 'CNN':
     server_type = Server
 else:
@@ -151,6 +167,11 @@ server = server_type(
         local_epochs=local_epochs,
         criterion=criterion)
 
+config.append(('server type', server.__class__.__name__))
+
+if args.verbose:
+    for (key, val) in config:
+        print(key, val)
 
 # with open(filename, 'a+') as f:
 print('epoch,te_acc,te_loss,elapsed')
