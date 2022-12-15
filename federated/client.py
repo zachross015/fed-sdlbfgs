@@ -43,6 +43,8 @@ class Client:
                 num_correct_tr += (predictions == labels).sum()
                 num_samples_tr += predictions.size(0)
 
+        # __import__('pdb').set_trace()
+
         return (running_loss_tr / num_batches_tr, num_correct_tr / num_samples_tr)
 
     def test_epoch(self):

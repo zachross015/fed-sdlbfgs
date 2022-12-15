@@ -3,9 +3,18 @@ import torch
 import time
 import copy
 
+
 class Server:
 
-    def __init__(self, model, optim, clients, testloader, criterion=nn.CrossEntropyLoss(), local_epochs=1):
+    def __init__(
+                 self,
+                 model,
+                 optim,
+                 clients,
+                 testloader,
+                 criterion=nn.CrossEntropyLoss(),
+                 local_epochs=1
+                 ):
 
         # Init Model
         self.model = model
@@ -14,33 +23,51 @@ class Server:
         self.num_clients = len(clients)
         self.testloader = testloader
         self.criterion = criterion
-        self.local_epochs=local_epochs
+        self.local_epochs = local_epochs
 
-    def train_epoch(self):
+    def update_buffers(self):
+        pass
 
-        start = time.time()
+    def zero_grad(self):
         params = self.optim.param_groups[0]['params']
-
         for p in params:
             p.grad = torch.zeros_like(p)
         self.optim.zero_grad()
 
-        # Calculate pseudogradient
-        self.model.train()
-        for i in range(self.num_clients):
+    def update_params(self):
+        params = self.optim.param_groups[0]['params']
+        # Update Pseudogradients
+        for i, (name, _) in enumerate(self.model.named_parameters()):
+            for j in range(self.num_clients):
+                params[i].grad += self.model.state_dict()[name] - self.clients[j].model.state_dict()[name]
+            params[i].grad /= self.num_clients
 
+    def backwards(self):
+        self.update_params()
+        self.update_buffers()
+
+    def move_server_state_to_clients(self):
+        for i in range(self.num_clients):
             client = self.clients[i]
             client.model.load_state_dict(copy.deepcopy(self.model.state_dict()))
 
+    def train_clients(self):
+        self.move_server_state_to_clients()
+
+        # Calculate pseudogradient
+        self.model.train()
+        for i in range(self.num_clients):
             for epoch in range(self.local_epochs):
-                client.train_epoch()
+                self.clients[i].train_epoch()
 
-            for i, names in enumerate(self.model.named_parameters()):
-                (key, _) = names
-                self.optim.param_groups[0]['params'][i].grad += self.model.state_dict()[key] - client.model.state_dict()[key]
+    def train_epoch(self):
 
-        for p in params:
-            p.grad /= self.num_clients
+        start = time.time()
+
+        self.zero_grad()
+        self.train_clients()
+
+        self.backwards()
 
         # Step using pseudogradient and optimizer
         self.optim.step()
@@ -73,3 +100,28 @@ class Server:
         te_loss = running_loss_te / num_batches_te
 
         return (te_loss, te_acc, self.elapsed)
+
+
+class ResNetServer(Server):
+
+    def update_buffers(self):
+
+        buffers = {}
+
+        # Zero out all the buffers (e.g. running_mean, running_var)
+        for name, _ in self.model.named_buffers():
+
+            # Zero the current buffer
+            self.model.state_dict()[name] = torch.zeros_like(self.model.state_dict()[name])
+
+            # Construct the buffer
+            buffers[name] = []
+            for i in range(self.num_clients):
+                client = self.clients[i]
+                buffers[name].append(client.model.state_dict()[name])
+            buffers[name] = torch.stack(buffers[name])
+
+            if 'num_batches_tracked' in name:
+                self.model.state_dict()[name] = buffers[name].sum(dim=0)
+            else:
+                self.model.state_dict()[name] = buffers[name].mean(dim=0)
