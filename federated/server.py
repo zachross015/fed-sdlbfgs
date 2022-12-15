@@ -43,6 +43,7 @@ class Server:
             params[i].grad /= self.num_clients
 
     def backwards(self):
+
         self.update_params()
         self.update_buffers()
 
@@ -106,22 +107,28 @@ class ResNetServer(Server):
 
     def update_buffers(self):
 
-        buffers = {}
+        with torch.no_grad():
 
-        # Zero out all the buffers (e.g. running_mean, running_var)
-        for name, _ in self.model.named_buffers():
+            buffers = {}
+            state_dict = self.model.state_dict()
 
-            # Zero the current buffer
-            self.model.state_dict()[name] = torch.zeros_like(self.model.state_dict()[name])
+            # Zero out all the buffers (e.g. running_mean, running_var)
+            for name, _ in self.model.named_buffers():
 
-            # Construct the buffer
-            buffers[name] = []
-            for i in range(self.num_clients):
-                client = self.clients[i]
-                buffers[name].append(client.model.state_dict()[name])
-            buffers[name] = torch.stack(buffers[name])
+                # Zero the current buffer
+                state_dict[name] = torch.zeros_like(self.model.state_dict()[name])
 
-            if 'num_batches_tracked' in name:
-                self.model.state_dict()[name] = buffers[name].mean(dim=0, dtype=torch.float).type(torch.long)
-            else:
-                self.model.state_dict()[name] = buffers[name].mean(dim=0)
+                # Construct the buffer
+                buffers[name] = []
+                for i in range(self.num_clients):
+                    client = self.clients[i]
+                    buffers[name].append(client.model.state_dict()[name])
+                buffers[name] = torch.stack(buffers[name])
+
+                if 'num_batches_tracked' in name:
+                    state_dict[name] = buffers[name].mean(dim=0, dtype=torch.float).type(torch.long)
+                else:
+                    state_dict[name] = buffers[name].mean(dim=0)
+
+            self.model.load_state_dict(state_dict)
+
