@@ -1,6 +1,6 @@
 # My stuff
 from common import get_model, get_optim
-from federated import Client, Server
+from federated import Client, Server, ResNetServer
 
 import argparse
 import random
@@ -25,20 +25,20 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--model', required=True)
 
 # Global config
-parser.add_argument('--train_batch_size', default=64)
-parser.add_argument('--test_batch_size', default=64)
-parser.add_argument('--num_workers', default=2)
+parser.add_argument('--train_batch_size', default=64, type=int)
+parser.add_argument('--test_batch_size', default=64, type=int)
+parser.add_argument('--num_workers', default=2, type=int)
 
 # Local Config
-parser.add_argument('--local_epochs', default=1)
-parser.add_argument('--local_lr', default=0.001)
-parser.add_argument('--num_clients', default=1)
+parser.add_argument('--local_epochs', default=1, type=int)
+parser.add_argument('--local_lr', default=0.001, type=float)
+parser.add_argument('--num_clients', default=1, type=int)
 
 # Server config
 parser.add_argument('--optimizer', required=True)
-parser.add_argument('--rounds', default=500)
-parser.add_argument('--server_lr', default=1.0)
-parser.add_argument('--seed', default=0)
+parser.add_argument('--rounds', default=500, type=int)
+parser.add_argument('--server_lr', default=1.0, type=float)
+parser.add_argument('--seed', default=0, type=int)
 
 args = parser.parse_args()
 
@@ -132,7 +132,11 @@ model = model.to(device)
 model.device = device
 
 optim = get_optim(args.optimizer, model, lr=server_lr)
-server = Server(
+if args.model == 'CNN':
+    server_type = Server
+else:
+    server_type = ResNetServer
+server = server_type(
         model,
         optim,
         clients,
