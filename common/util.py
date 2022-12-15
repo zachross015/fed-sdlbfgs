@@ -17,10 +17,10 @@ def get_optim(optim_name, model, **kwargs):
     elif optim_name == 'sdlbfgs_layer':
         return SdLBFGSLayer(model.parameters(), **kwargs)
     elif optim_name == 'adam':
-        return optim.Adam(model.parameters(), **kwargs)
+        return optim.Adam(model.parameters())
     elif optim_name == 'kfac':
-        return KFACOptimizer(model, **kwargs)
+        return KFACOptimizer(model, lr=0.0001)
     elif optim_name == 'shampoo':
-        return Shampoo(model.parameters(), **kwargs)
+        return Shampoo(model.parameters())
     else:
-        return optim.SGD(model.parameters(), **kwargs)
+        return optim.SGD(model.parameters(), lr=0.005)
